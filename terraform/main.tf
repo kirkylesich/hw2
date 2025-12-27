@@ -40,24 +40,7 @@ resource "random_string" "bucket_suffix" {
   upper   = false
 }
 
-# Temporary service account for initial setup (will be replaced by functions_sa)
-resource "yandex_iam_service_account" "terraform_sa" {
-  name        = "${var.prefix}-terraform-sa"
-  description = "Temporary service account for Terraform to create resources"
-}
 
-# Static access key for Terraform operations
-resource "yandex_iam_service_account_static_access_key" "terraform_sa_key" {
-  service_account_id = yandex_iam_service_account.terraform_sa.id
-  description        = "Static access key for Terraform to create S3 and SQS resources"
-}
-
-# Grant necessary permissions to terraform SA
-resource "yandex_resourcemanager_folder_iam_member" "terraform_sa_editor" {
-  folder_id = var.folder_id
-  role      = "editor"
-  member    = "serviceAccount:${yandex_iam_service_account.terraform_sa.id}"
-}
 
 # VPC Network
 resource "yandex_vpc_network" "main" {
@@ -172,24 +155,15 @@ resource "yandex_message_queue" "tasks_queue" {
   message_retention_seconds  = 345600 # 4 days
   receive_wait_time_seconds  = 20     # Long polling
 
-  access_key = yandex_iam_service_account_static_access_key.terraform_sa_key.access_key
-  secret_key = yandex_iam_service_account_static_access_key.terraform_sa_key.secret_key
-}
-
-# Dead Letter Queue
-resource "yandex_message_queue" "dlq" {
-  name                      = "${var.prefix}-dlq"
-  message_retention_seconds = 1209600 # 14 days
-
-  access_key = yandex_iam_service_account_static_access_key.terraform_sa_key.access_key
-  secret_key = yandex_iam_service_account_static_access_key.terraform_sa_key.secret_key
+  access_key = yandex_iam_service_account_static_access_key.functions_sa_key.access_key
+  secret_key = yandex_iam_service_account_static_access_key.functions_sa_key.secret_key
 }
 
 # Object Storage Bucket
 resource "yandex_storage_bucket" "main" {
   bucket     = "${var.prefix}-storage-${random_string.bucket_suffix.result}"
-  access_key = yandex_iam_service_account_static_access_key.terraform_sa_key.access_key
-  secret_key = yandex_iam_service_account_static_access_key.terraform_sa_key.secret_key
+  access_key = yandex_iam_service_account_static_access_key.functions_sa_key.access_key
+  secret_key = yandex_iam_service_account_static_access_key.functions_sa_key.secret_key
 
   # Anonymous read access for PDF files
   anonymous_access_flags {
@@ -216,6 +190,19 @@ resource "yandex_storage_bucket" "main" {
 resource "yandex_iam_service_account_static_access_key" "functions_sa_key" {
   service_account_id = yandex_iam_service_account.functions_sa.id
   description        = "Static access key for Cloud Functions to access S3 and SQS"
+}
+
+# IAM roles for Functions SA - add storage.editor for S3 bucket creation
+resource "yandex_resourcemanager_folder_iam_member" "functions_storage_editor" {
+  folder_id = var.folder_id
+  role      = "storage.editor"
+  member    = "serviceAccount:${yandex_iam_service_account.functions_sa.id}"
+}
+
+resource "yandex_resourcemanager_folder_iam_member" "functions_ymq_admin" {
+  folder_id = var.folder_id
+  role      = "ymq.admin"
+  member    = "serviceAccount:${yandex_iam_service_account.functions_sa.id}"
 }
 
 # Archive Python functions
@@ -405,27 +392,6 @@ resource "yandex_serverless_container" "worker" {
     yandex_container_registry_iam_binding.worker_puller
   ]
 }
-
-# Lockbox Secret for API Keys (NOT USED - using IAM tokens from metadata service instead)
-# resource "yandex_lockbox_secret" "api_keys" {
-#   name        = "${var.prefix}-api-keys"
-#   description = "API keys for SpeechKit and YandexGPT"
-# }
-
-# Lockbox Secret Version (NOT USED - using IAM tokens from metadata service instead)
-# resource "yandex_lockbox_secret_version" "api_keys_version" {
-#   secret_id = yandex_lockbox_secret.api_keys.id
-#
-#   entries {
-#     key        = "speechkit_api_key"
-#     text_value = var.speechkit_api_key != "" ? var.speechkit_api_key : "PLACEHOLDER_SET_IN_CONSOLE"
-#   }
-#
-#   entries {
-#     key        = "yandexgpt_api_key"
-#     text_value = var.yandexgpt_api_key != "" ? var.yandexgpt_api_key : "PLACEHOLDER_SET_IN_CONSOLE"
-#   }
-# }
 
 # Trigger for Worker Container (invoke on queue messages)
 resource "yandex_function_trigger" "worker_trigger" {

@@ -16,12 +16,6 @@ output "queue_url" {
   sensitive   = true
 }
 
-output "dlq_url" {
-  description = "Dead Letter Queue URL"
-  value       = yandex_message_queue.dlq.id
-  sensitive   = true
-}
-
 output "bucket_name" {
   description = "Object Storage bucket name"
   value       = yandex_storage_bucket.main.bucket
@@ -41,12 +35,6 @@ output "functions_sa_id" {
 output "worker_sa_id" {
   description = "Worker Service Account ID"
   value       = yandex_iam_service_account.worker_sa.id
-  sensitive   = true
-}
-
-output "terraform_sa_id" {
-  description = "Terraform Service Account ID (used for resource creation)"
-  value       = yandex_iam_service_account.terraform_sa.id
   sensitive   = true
 }
 
