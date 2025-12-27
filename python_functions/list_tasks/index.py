@@ -77,11 +77,13 @@ def handler(event, context):
             if task['status'] == 'completed' and row.pdf_key:
                 pdf_key = row.pdf_key.decode('utf-8') if isinstance(row.pdf_key, bytes) else row.pdf_key
                 try:
+                    # Use title as-is for filename (RFC 5987 encoding handles special characters)
                     pdf_url = s3.generate_presigned_url(
                         'get_object',
                         Params={
                             'Bucket': s3_bucket,
                             'Key': pdf_key,
+                            'ResponseContentDisposition': f'attachment; filename="{task["title"]}.pdf"'
                         },
                         ExpiresIn=3600,  # 1 hour
                     )

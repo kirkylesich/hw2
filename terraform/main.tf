@@ -12,16 +12,20 @@ terraform {
       source  = "kreuzwerker/docker"
       version = "~> 3.0.1"
     }
+    null = {
+      source  = "hashicorp/null"
+      version = "~> 3.0"
+    }
   }
   required_version = ">= 1.0"
 }
 
 # Provider configuration using YC_TOKEN environment variable
 provider "yandex" {
+  token     = var.yc_token
   cloud_id  = var.cloud_id
   folder_id = var.folder_id
   zone      = var.zone
-  # Authentication via YC_TOKEN environment variable (no token in code)
 }
 
 # Docker provider for building images
@@ -38,40 +42,6 @@ resource "random_string" "bucket_suffix" {
   length  = 8
   special = false
   upper   = false
-}
-
-
-
-# VPC Network
-resource "yandex_vpc_network" "main" {
-  name = "${var.prefix}-network"
-}
-
-# Subnet
-resource "yandex_vpc_subnet" "main" {
-  name           = "${var.prefix}-subnet"
-  zone           = var.zone
-  network_id     = yandex_vpc_network.main.id
-  v4_cidr_blocks = ["10.0.0.0/24"]
-}
-
-# Security Group for Serverless Container
-resource "yandex_vpc_security_group" "container_sg" {
-  name       = "${var.prefix}-container-sg"
-  network_id = yandex_vpc_network.main.id
-
-  egress {
-    protocol       = "ANY"
-    description    = "Allow all outbound traffic"
-    v4_cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    protocol       = "TCP"
-    description    = "Health checks"
-    v4_cidr_blocks = ["0.0.0.0/0"]
-    port           = 8080
-  }
 }
 
 # Service Account for Cloud Functions
@@ -157,33 +127,37 @@ resource "yandex_message_queue" "tasks_queue" {
 
   access_key = yandex_iam_service_account_static_access_key.functions_sa_key.access_key
   secret_key = yandex_iam_service_account_static_access_key.functions_sa_key.secret_key
+
+  lifecycle {
+    create_before_destroy = false
+  }
+
+  depends_on = [
+    yandex_resourcemanager_folder_iam_member.functions_ymq_admin,
+    yandex_resourcemanager_folder_iam_member.functions_ymq_writer
+  ]
 }
 
 # Object Storage Bucket
 resource "yandex_storage_bucket" "main" {
-  bucket     = "${var.prefix}-storage-${random_string.bucket_suffix.result}"
-  access_key = yandex_iam_service_account_static_access_key.functions_sa_key.access_key
-  secret_key = yandex_iam_service_account_static_access_key.functions_sa_key.secret_key
+  bucket        = "${var.prefix}-storage-${random_string.bucket_suffix.result}"
+  access_key    = yandex_iam_service_account_static_access_key.functions_sa_key.access_key
+  secret_key    = yandex_iam_service_account_static_access_key.functions_sa_key.secret_key
+  force_destroy = true
 
-  # Anonymous read access for PDF files
   anonymous_access_flags {
     read = true
     list = false
   }
 
-  # Lifecycle rule for temporary files
-  lifecycle_rule {
-    id      = "delete-temp-files"
-    enabled = true
-
-    filter {
-      prefix = "temp/"
-    }
-
-    expiration {
-      days = 1 # Delete after 1 day (minimum allowed)
-    }
+  lifecycle {
+    create_before_destroy = false
   }
+
+  depends_on = [
+    yandex_iam_service_account_static_access_key.functions_sa_key,
+    yandex_resourcemanager_folder_iam_member.functions_storage_editor
+  ]
 }
 
 # Static Access Keys for Functions Service Account
@@ -279,6 +253,16 @@ resource "yandex_function" "list_tasks" {
   content {
     zip_filename = data.archive_file.list_tasks_function.output_path
   }
+
+  depends_on = [
+    yandex_storage_bucket.main
+  ]
+
+  lifecycle {
+    replace_triggered_by = [
+      yandex_storage_bucket.main
+    ]
+  }
 }
 
 # Allow unauthenticated invoke for list_tasks
@@ -314,6 +298,10 @@ resource "yandex_function_iam_binding" "static_pages_public" {
 resource "yandex_container_registry" "main" {
   name      = "${var.prefix}-registry"
   folder_id = var.folder_id
+
+  lifecycle {
+    create_before_destroy = false
+  }
 }
 
 # Grant worker SA permission to pull images from registry
@@ -337,11 +325,33 @@ resource "docker_image" "worker" {
 }
 
 resource "docker_registry_image" "worker" {
-  name = docker_image.worker.name
-  
+  name          = docker_image.worker.name
+  keep_remotely = false
+
   depends_on = [
     docker_image.worker,
     yandex_container_registry_iam_binding.worker_puller
+  ]
+}
+
+resource "null_resource" "cleanup_registry" {
+  triggers = {
+    registry_id = yandex_container_registry.main.id
+  }
+
+  provisioner "local-exec" {
+    when    = destroy
+    command = <<-EOT
+      IMAGE_IDS=$(yc container image list --registry-id ${self.triggers.registry_id} --format json 2>/dev/null | jq -r '.[].id' 2>/dev/null | tr '\n' ' ')
+      if [ -n "$IMAGE_IDS" ]; then
+        yc container image delete $IMAGE_IDS 2>/dev/null || true
+      fi
+    EOT
+  }
+
+  depends_on = [
+    docker_registry_image.worker,
+    yandex_serverless_container.worker
   ]
 }
 
@@ -383,14 +393,18 @@ resource "yandex_serverless_container" "worker" {
     }
   }
 
-  connectivity {
-    network_id = yandex_vpc_network.main.id
-  }
-
   depends_on = [
     docker_registry_image.worker,
-    yandex_container_registry_iam_binding.worker_puller
+    yandex_container_registry_iam_binding.worker_puller,
+    yandex_storage_bucket.main
   ]
+
+  lifecycle {
+    replace_triggered_by = [
+      yandex_storage_bucket.main
+    ]
+    create_before_destroy = false
+  }
 }
 
 # Trigger for Worker Container (invoke on queue messages)
@@ -411,7 +425,14 @@ resource "yandex_function_trigger" "worker_trigger" {
     service_account_id = yandex_iam_service_account.worker_sa.id
   }
 
-  depends_on = [yandex_serverless_container.worker]
+  depends_on = [
+    yandex_serverless_container.worker,
+    yandex_message_queue.tasks_queue
+  ]
+
+  lifecycle {
+    create_before_destroy = false
+  }
 }
 
 # API Gateway

@@ -86,21 +86,6 @@ output "yandex_api_key" {
   sensitive   = true
 }
 
-output "vpc_network_id" {
-  description = "VPC Network ID"
-  value       = yandex_vpc_network.main.id
-}
-
-output "vpc_subnet_id" {
-  description = "VPC Subnet ID"
-  value       = yandex_vpc_subnet.main.id
-}
-
-output "security_group_id" {
-  description = "Security Group ID for Serverless Container"
-  value       = yandex_vpc_security_group.container_sg.id
-}
-
 # Lockbox outputs removed - using IAM tokens from metadata service instead
 # output "lockbox_secret_id" {
 #   description = "Lockbox Secret ID for API keys"

@@ -61,7 +61,8 @@ def process_task(task_id: str) -> None:
     try:
         task = ydb_client.get_task(task_id)
         if not task:
-            raise Exception(f"Task {task_id} not found")
+            logger.warning(f"Task {task_id} not found in database, skipping (likely from old database)")
+            return
         
         logger.info(f"Processing task {task_id}: {task['title']}")
         
@@ -180,6 +181,9 @@ def process_task(task_id: str) -> None:
         error_msg = f"Unexpected error: {str(e)}"
         logger.error(error_msg)
         cleanup_temp_files(task_id)
-        ydb_client.update_task_status(task_id, "error", error_msg)
+        try:
+            ydb_client.update_task_status(task_id, "error", error_msg)
+        except Exception:
+            logger.warning(f"Could not update task status (task may not exist)")
     finally:
         ydb_client.close()
