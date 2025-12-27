@@ -1,0 +1,163 @@
+openapi: 3.0.0
+info:
+  title: Lecture Notes Generator API
+  version: 1.0.0
+  description: API Gateway for Lecture Notes Generator application
+
+# HTTPS only - enforced by Yandex API Gateway
+servers:
+  - url: https://{api-gateway-id}.apigw.yandexcloud.net
+    description: API Gateway endpoint (HTTPS only)
+
+paths:
+  /:
+    get:
+      summary: Get main page with task creation form
+      description: Returns HTML page with form to create new lecture notes task
+      operationId: getMainPage
+      x-yc-apigateway-integration:
+        type: cloud_functions
+        function_id: ${static_pages_function_id}
+        service_account_id: ${functions_sa_id}
+      responses:
+        '200':
+          description: HTML page with task creation form
+          content:
+            text/html:
+              schema:
+                type: string
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+
+  /tasks:
+    get:
+      summary: Get task list page
+      description: Returns HTML page displaying all tasks and their statuses
+      operationId: getTaskList
+      x-yc-apigateway-integration:
+        type: cloud_functions
+        function_id: ${static_pages_function_id}
+        service_account_id: ${functions_sa_id}
+      responses:
+        '200':
+          description: HTML page with task list
+          content:
+            text/html:
+              schema:
+                type: string
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+
+    post:
+      summary: Create new lecture notes task
+      description: Creates a new task for generating lecture notes from video
+      operationId: createTask
+      x-yc-apigateway-integration:
+        type: cloud_functions
+        function_id: ${create_task_function_id}
+        service_account_id: ${functions_sa_id}
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required:
+                - title
+                - video_link
+              properties:
+                title:
+                  type: string
+                  description: Lecture title
+                  minLength: 1
+                video_link:
+                  type: string
+                  description: Yandex Disk public link to video file
+                  minLength: 1
+      responses:
+        '302':
+          description: Redirect to task list page after successful creation
+          headers:
+            Location:
+              schema:
+                type: string
+                example: /tasks
+        '400':
+          description: Bad request - validation error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Title and video_link are required"
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+
+  /api/tasks:
+    get:
+      summary: Get task list as JSON
+      description: Returns JSON array of all tasks for API consumption
+      operationId: getTaskListAPI
+      x-yc-apigateway-integration:
+        type: cloud_functions
+        function_id: ${list_tasks_function_id}
+        service_account_id: ${functions_sa_id}
+      responses:
+        '200':
+          description: JSON array of tasks
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tasks:
+                    type: array
+                    items:
+                      type: object
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+
+# CORS configuration for web interface
+x-yc-apigateway-cors:
+  allowOrigins:
+    - '*'
+  allowMethods:
+    - GET
+    - POST
+    - OPTIONS
+  allowHeaders:
+    - Content-Type
+    - Authorization
+  exposeHeaders:
+    - Content-Length
+  maxAge: 3600
